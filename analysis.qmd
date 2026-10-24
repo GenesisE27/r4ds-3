@@ -1,0 +1,115 @@
+---
+title: "Analyzing School District Reading Scores"
+author: "Genesis E"
+format: html
+execute:
+  echo: false
+---
+
+```{r}
+#| message: false
+library(tidyverse)
+library(DBI)
+library(duckdb)
+library(dbplyr)
+```
+
+```{r}
+con <- dbConnect(duckdb(), dbdir = "data/seda_2025.duckdb", read_only = TRUE)
+dbplyr_dist <- tbl(con, "district_scores")
+```
+
+```{r}
+#| cache: true
+#| cache.extra: !expr file.mtime("data/seda_2025.duckdb")
+
+district_scores_2015 <- dbplyr_dist |>
+  filter(year == 2015, !is.na(rla_score)) |>
+  select(district_id, district_name, state, rla_2015 = rla_score)
+district_scores_2023 <- dbplyr_dist |>
+  filter(year == 2023, !is.na(rla_score)) |>
+  select(district_id, district_name, state, rla_2023 = rla_score)
+score_change <- inner_join(
+  district_scores_2015,
+  district_scores_2023,
+  by = c("district_id", "district_name", "state")
+) |>
+  mutate(rla_change = rla_2023 - rla_2015) |>
+  select(district_id, district_name, state, rla_change) |>
+  collect()
+print(score_change)
+
+state_scores <- tbl(con, "state_scores")
+state_scores_2015 <- state_scores |>
+  filter(year == 2015, !is.na(rla_score)) |>
+  select(stateabb, state_name, rla_2015 = rla_score)
+state_scores_2023 <- state_scores |>
+  filter(year == 2023, !is.na(rla_score)) |>
+  select(stateabb, state_name, rla_2023 = rla_score)
+state_change <- inner_join(
+  state_scores_2015,
+  state_scores_2023,
+  by = c("stateabb", "state_name")
+) |>
+  mutate(score_change = rla_2023 - rla_2015) |>
+  select(stateabb, state_name, rla_2015, rla_2023, score_change) |>
+  collect()
+print(state_change)
+```
+
+```{r}
+score_change |>
+  ggplot(aes(
+    x = rla_change,
+    fill = case_when(
+      rla_change > 0 ~ "Positive",
+      rla_change < 0 ~ "Negative",
+      TRUE ~ "No change"
+    )
+  )) +
+  geom_histogram(bins = 30, color = "white") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_fill_manual(
+    values = c("Negative" = "#d95f02", "No change" = "#7570b3", "Positive" = "#1b9e77")
+  ) +
+  labs(
+    title = "Distribution of District Reading Score Changes",
+    subtitle = paste("Districts with data in both years:", scales::comma(nrow(score_change))),
+    x = "Change in reading score (2023 - 2015)",
+    y = "Number of districts",
+    fill = "Change",
+    caption = "Positive values indicate improvement; the dashed line marks no change."
+  )
+```
+
+```{r}
+state_change |>
+  mutate(
+    state_name = fct_reorder(state_name, rla_2023),
+    direction = case_when(
+      score_change > 0 ~ "Improved",
+      score_change < 0 ~ "Declined",
+      TRUE ~ "No change"
+    )
+  ) |>
+  ggplot(aes(y = state_name)) +
+  geom_segment(
+    aes(x = rla_2015, xend = rla_2023, yend = state_name, color = direction),
+    arrow = grid::arrow(length = grid::unit(0.12, "inches"), type = "closed"),
+    linewidth = 0.6
+  ) +
+  geom_point(aes(x = rla_2015), color = "gray60", size = 1.8) +
+  scale_color_manual(values = c(
+    "Declined" = "#d95f02",
+    "No change" = "#7570b3",
+    "Improved" = "#1b9e77"
+  )) +
+  labs(
+    title = "State Reading Scores: 2015 to 2023",
+    subtitle = "States are ordered by their 2023 reading score",
+    x = "Reading score",
+    y = NULL,
+    color = "Direction of change",
+    caption = "Gray dots mark 2015 scores; arrows point to 2023 scores."
+  )
+```
